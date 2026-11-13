@@ -32,10 +32,24 @@ app.get('/', (req, res) => {
 // ROTA 1: Enviar o cardápio real e o WhatsApp
 app.get('/api/cardapio', async (req, res) => {
   try {
-    const query = 'SELECT * FROM produtos ORDER BY nome ASC';
-    const resultado = await pool.query(query);
+    // 1. Pega o ID do cliente que vem na URL (ex: ?usuario=2)
+    const usuarioId = req.query.usuario;
 
-    // Entrega o WhatsApp (do .env) e os produtos (do banco)
+    let query;
+    let valores = [];
+
+    // 2. Filtra pelo usuario_id se ele for enviado
+    if (usuarioId) {
+      query = 'SELECT * FROM produtos WHERE usuario_id = $1 ORDER BY nome ASC';
+      valores = [usuarioId];
+    } else {
+      // Se ninguém avisar de qual loja é, puxa tudo por garantia
+      query = 'SELECT * FROM produtos ORDER BY nome ASC';
+    }
+
+    const resultado = await pool.query(query, valores);
+
+    // Entrega o WhatsApp e os produtos filtrados
     return res.json({
       whatsapp: process.env.WHATSAPP_NUMBER,
       produtos: resultado.rows
