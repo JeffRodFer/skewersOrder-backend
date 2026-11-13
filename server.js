@@ -20,6 +20,31 @@ app.use(cors({
 app.use(express.json());
 
 
+// FUNÇÃO AUXILIAR: Disparar alerta para o WhatsApp do Gestor
+async function enviarAlertaWhatsApp(nomeProduto, estoqueAtual) {
+  const telefoneGestor = process.env.WHATSAPP_NUMBER; // Usa o número que já está no seu .env
+  const mensagem = `⚠️ *Alerta de Estoque*\nO produto "${nomeProduto}" está acabando! Restam apenas ${estoqueAtual} unidades.`;
+
+  console.log(`[SISTEMA] Preparando envio de WhatsApp para ${telefoneGestor}: ${mensagem}`);
+
+  try {
+    // Aqui entra a conexão com a sua API de WhatsApp (Ex: Z-API, Evolution, CallMeBot)
+    // Exemplo de como o código ficará quando você plugar a API:
+    /*
+    await fetch('URL_DA_SUA_API', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        numero: telefoneGestor, 
+        texto: mensagem 
+      })
+    });
+    */
+  } catch (erro) {
+    console.error("Falha ao tentar enviar o alerta no WhatsApp:", erro);
+  }
+}
+
 // ==========================================
 // 2. ROTAS PÚBLICAS (Cliente)
 // ==========================================
@@ -149,41 +174,112 @@ app.post('/admin/atualizar', async (req, res) => {
   }
 });
 
-// NOVA ROTA: Salvar várias alterações de uma vez
+// ROTA APRIMORADA: Salvar várias alterações de uma vez (incluindo Estoque e Alertas)
 app.post('/admin/atualizar-lote', async (req, res) => {
-  // Agora recebemos a lista inteira do carrinho!
-  const { usuario, senha, listaProdutos } = req.body;
+  const { usuario, senha, produtos } = req.body;
 
   const userCerto = process.env.ADMIN_USER;
   const hashCerto = process.env.ADMIN_PASS_HASH;
 
-  if (usuario !== userCerto) {
-    return res.status(401).json({ erro: 'Usuário incorreto!' });
-  }
+  if (usuario !== userCerto) return res.status(401).json({ erro: 'Usuário incorreto!' });
 
   try {
     const senhaValida = await bcrypt.compare(senha, hashCerto);
-    if (!senhaValida) {
-      return res.status(401).json({ erro: 'Senha incorreta!' });
-    }
+    if (!senhaValida) return res.status(401).json({ erro: 'Senha incorreta!' });
 
-    // O Caixa do Supermercado: atualiza item por item no banco
-    for (let item of listaProdutos) {
+    for (let item of produtos) {
       const query = `
         UPDATE produtos 
-        SET disponivel = $1 
-        WHERE id = $2
+        SET 
+          disponivel = $1,
+          estoque = COALESCE($2, estoque) 
+        WHERE id = $3
+        RETURNING nome, estoque; 
       `;
-      await pool.query(query, [item.disponivel, item.id]);
+      // O 'RETURNING' faz o banco devolver o nome e o estoque atualizado
+      const resultado = await pool.query(query, [item.disponivel, item.estoque, item.id]);
+
+      const produtoAtualizado = resultado.rows[0];
+
+      // REGRA DE NEGÓCIO: Se o gestor editou e ficou abaixo de 11, gera o alerta
+      if (produtoAtualizado && produtoAtualizado.estoque < 11) {
+        enviarAlertaWhatsApp(produtoAtualizado.nome, produtoAtualizado.estoque);
+      }
     }
 
-    return res.json({ mensagem: 'Cardápio salvo com sucesso!' });
+    return res.json({ mensagem: 'Cardápio e Estoque salvos com sucesso!' });
 
   } catch (erro) {
     console.error('Erro ao salvar lote:', erro);
     return res.status(500).json({ erro: 'Erro ao salvar alterações' });
   }
 });
+
+// ==========================================
+// NOVAS ROTAS DE ESTOQUE E DEVOLUÇÃO
+// ==========================================
+
+// NOVA ROTA: Registrar venda, dar baixa e gerar alertas
+app.post('/api/registrar-venda', async (req, res) => {
+  const { itensCarrinho } = req.body;
+
+  if (!itensCarrinho || itensCarrinho.length === 0) {
+    return res.status(400).json({ erro: 'Carrinho vazio' });
+  }
+
+  try {
+    for (let item of itensCarrinho) {
+      const query = `
+        UPDATE produtos 
+        SET 
+          estoque = GREATEST(estoque - $1, 0),
+          disponivel = CASE WHEN (estoque - $1) <= 0 THEN false ELSE disponivel END
+        WHERE id = $2
+        RETURNING nome, estoque;
+      `;
+      const resultado = await pool.query(query, [item.quantidade, item.id]);
+      const produtoAtualizado = resultado.rows[0];
+
+      // Dispara o alerta se a venda derrubou o estoque para menos de 11
+      if (produtoAtualizado && produtoAtualizado.estoque < 11) {
+        enviarAlertaWhatsApp(produtoAtualizado.nome, produtoAtualizado.estoque);
+      }
+    }
+    return res.json({ mensagem: 'Baixa no estoque realizada!' });
+  } catch (erro) {
+    console.error('Erro ao registrar venda:', erro);
+    return res.status(500).json({ erro: 'Erro ao dar baixa' });
+  }
+});
+
+// NOVA ROTA: Estornar (devolver) produto pelo painel Admin
+app.post('/admin/estornar', async (req, res) => {
+  const { usuario, senha, itensEstorno } = req.body;
+
+  const userCerto = process.env.ADMIN_USER;
+  const hashCerto = process.env.ADMIN_PASS_HASH;
+
+  if (usuario !== userCerto) return res.status(401).json({ erro: 'Usuário incorreto!' });
+
+  try {
+    const senhaValida = await bcrypt.compare(senha, hashCerto);
+    if (!senhaValida) return res.status(401).json({ erro: 'Senha incorreta!' });
+
+    for (let item of itensEstorno) {
+      const query = `
+        UPDATE produtos 
+        SET estoque = estoque + $1, disponivel = true
+        WHERE id = $2
+      `;
+      await pool.query(query, [item.quantidade, item.id]);
+    }
+    return res.json({ mensagem: 'Estorno realizado!' });
+  } catch (erro) {
+    console.error('Erro ao estornar:', erro);
+    return res.status(500).json({ erro: 'Erro no estorno' });
+  }
+});
+
 
 
 // ==========================================
