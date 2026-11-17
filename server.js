@@ -59,22 +59,18 @@ app.get('/', (req, res) => {
 // ==========================================
 app.get('/api/cardapio', async (req, res) => {
   try {
-    // 1. Pega o ID do cliente que vem na URL (ex: ?usuario=2)
     const tenantId = req.query.usuario;
 
-    // 2. BARREIRA DE SEGURANÇA: Se não vier o ID, ele recusa a entrega em vez de misturar tudo.
     if (!tenantId) {
       return res.status(400).json({ erro: 'ID do restaurante não identificado.' });
     }
 
-    // 3. Busca estritamente os produtos deste restaurante específico
-    // OBS: Se a sua coluna na tabela produtos se chamar usuario_id em vez de tenant_id, troque aqui embaixo!
-    const query = 'SELECT * FROM produtos WHERE tenant_id = $1 ORDER BY nome ASC';
+    // AQUI VOLTAMOS PARA O NOME DA SUA COLUNA ORIGINAL: usuario_id
+    const query = 'SELECT * FROM produtos WHERE usuario_id = $1 ORDER BY nome ASC';
     const valores = [tenantId];
 
     const resultado = await pool.query(query, valores);
 
-    // Entrega o WhatsApp e os produtos filtrados
     return res.json({
       whatsapp: process.env.WHATSAPP_NUMBER,
       produtos: resultado.rows
