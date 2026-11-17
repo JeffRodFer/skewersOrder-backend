@@ -54,23 +54,23 @@ app.get('/', (req, res) => {
   res.send("O motor do Espetinho do Chefe está Online!");
 });
 
-// ROTA 1: Enviar o cardápio real e o WhatsApp
+// ==========================================
+// ROTA 1: Enviar o cardápio real e o WhatsApp (BLINDADA)
+// ==========================================
 app.get('/api/cardapio', async (req, res) => {
   try {
     // 1. Pega o ID do cliente que vem na URL (ex: ?usuario=2)
-    const usuarioId = req.query.usuario;
+    const tenantId = req.query.usuario;
 
-    let query;
-    let valores = [];
-
-    // 2. Filtra pelo usuario_id se ele for enviado
-    if (usuarioId) {
-      query = 'SELECT * FROM produtos WHERE usuario_id = $1 ORDER BY nome ASC';
-      valores = [usuarioId];
-    } else {
-      // Se ninguém avisar de qual loja é, puxa tudo por garantia
-      query = 'SELECT * FROM produtos ORDER BY nome ASC';
+    // 2. BARREIRA DE SEGURANÇA: Se não vier o ID, ele recusa a entrega em vez de misturar tudo.
+    if (!tenantId) {
+      return res.status(400).json({ erro: 'ID do restaurante não identificado.' });
     }
+
+    // 3. Busca estritamente os produtos deste restaurante específico
+    // OBS: Se a sua coluna na tabela produtos se chamar usuario_id em vez de tenant_id, troque aqui embaixo!
+    const query = 'SELECT * FROM produtos WHERE tenant_id = $1 ORDER BY nome ASC';
+    const valores = [tenantId];
 
     const resultado = await pool.query(query, valores);
 
