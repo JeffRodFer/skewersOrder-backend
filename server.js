@@ -61,9 +61,20 @@ app.post('/api/pedidos', async (req, res) => {
       VALUES ($1, $2, $3, $4)
     `;
 
+    const queryItem = `
+      INSERT INTO itens_pedido 
+      (pedido_id, produto_id, quantidade, preco_unitario) 
+      VALUES ($1, $2, $3, $4)
+    `;
+
     for (let item of carrinho) {
       const valItem = [idDoNovoPedido, item.id, item.quantidade, item.preco];
       await client.query(queryItem, valItem);
+      
+      // === PASSO 3: BAIXA NO ESTOQUE ===
+      // Usa o nome correto da coluna revelado no Neon: 'estoque'
+      const queryBaixa = `UPDATE produtos SET estoque = estoque - $1 WHERE id = $2`;
+      await client.query(queryBaixa, [item.quantidade, item.id]);
     }
 
     await client.query('COMMIT');
