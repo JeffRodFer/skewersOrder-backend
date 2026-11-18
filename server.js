@@ -49,10 +49,8 @@ app.post('/api/pedidos', async (req, res) => {
     await client.query('BEGIN');
 
     const queryPedido = `
-      INSERT INTO pedidos 
-      (id, tenant_id, cliente_nome, total, tipo_entrega) 
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *;
+      INSERT INTO pedidos (id, tenant_id, cliente_nome, total, tipo_entrega) 
+      VALUES ($1, $2, $3, $4, $5) RETURNING *;
     `;
     const valPedido = [idDoNovoPedido, tenantId, clienteNome, total, tipoEntrega];
     const resultadoPedido = await client.query(queryPedido, valPedido);
