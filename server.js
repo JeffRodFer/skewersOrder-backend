@@ -2,83 +2,87 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const pool = require('./db');
-const bcrypt = require('bcrypt')
+const bcrypt = require('bcrypt');
+const crypto = require('crypto'); // <-- ADICIONE ESTA LINHA AQUI
 const app = express();
 
 // ==========================================
 // 1. CONFIGURAÇÕES GERAIS
 // ==========================================
-
-// Regras claras do segurança (CORS) para evitar bloqueios na Vercel
-app.use(cors({
-  origin: '*', // Aceita o seu frontend (pode ser trocado pela URL final depois)
-  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Permite ler, criar, atualizar e apagar
-  allowedHeaders: ['Content-Type', 'Authorization'] // Essencial para o login do Admin!
-}));
+// Permite comunicação do seu Front-end com o Back-end
+app.use(cors());
 
 // Permite o servidor entender JSON (O "óleo no motor")
 app.use(express.json());
 
-
-// FUNÇÃO AUXILIAR: Disparar alerta para o WhatsApp do Gestor
-async function enviarAlertaWhatsApp(nomeProduto, estoqueAtual) {
-  const telefoneGestor = process.env.WHATSAPP_NUMBER; // Usa o número que já está no seu .env
-  const mensagem = `⚠️ *Alerta de Estoque*\nO produto "${nomeProduto}" está acabando! Restam apenas ${estoqueAtual} unidades.`;
-
-  console.log(`[SISTEMA] Preparando envio de WhatsApp para ${telefoneGestor}: ${mensagem}`);
+// ==========================================
+// ROTA 1: BUSCAR CARDÁPIO (BLINDADA COM TENANT_ID)
+// ==========================================
+app.get('/api/cardapio', async (req, res) => {
+  const tenantId = req.query.usuario;
 
   try {
-    // Aqui entra a conexão com a sua API de WhatsApp (Ex: Z-API, Evolution, CallMeBot)
-    // Exemplo de como o código ficará quando você plugar a API:
-    /*
-    await fetch('URL_DA_SUA_API', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        numero: telefoneGestor, 
-        texto: mensagem 
-      })
-    });
-    */
-  } catch (erro) {
-    console.error("Falha ao tentar enviar o alerta no WhatsApp:", erro);
+    const query = `
+      SELECT * FROM produtos 
+      WHERE tenant_id = $1 
+      ORDER BY categoria, id;
+    `;
+    const { rows } = await pool.query(query, [tenantId]);
+    res.json({ produtos: rows });
+
+  } catch (error) {
+    console.error("Erro ao buscar cardápio:", error);
+    res.status(500).json({ error: 'Erro ao buscar produtos' });
   }
-}
-
-// ==========================================
-// 2. ROTAS PÚBLICAS (Cliente)
-// ==========================================
-
-// Rota de Health Check (Para ver se está online)
-app.get('/', (req, res) => {
-  res.send("O motor do Espetinho do Chefe está Online!");
 });
 
 // ==========================================
-// ROTA 1: Enviar o cardápio real e o WhatsApp (BLINDADA)
+// ROTA 2: Salvar o pedido E os itens do carrinho (Com Transação)
 // ==========================================
-app.get('/api/cardapio', async (req, res) => {
-  try {
-    const tenantId = req.query.usuario;
+app.post('/api/pedidos', async (req, res) => {
+  const { tenantId, clienteNome, total, tipoEntrega, carrinho } = req.body;
 
-    if (!tenantId) {
-      return res.status(400).json({ erro: 'ID do restaurante não identificado.' });
+  const idDoNovoPedido = crypto.randomUUID();
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const queryPedido = `
+      INSERT INTO pedidos 
+      (id, tenant_id, cliente_nome, total, tipo_entrega) 
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *;
+    `;
+    const valPedido = [idDoNovoPedido, tenantId, clienteNome, total, tipoEntrega];
+    const resultadoPedido = await client.query(queryPedido, valPedido);
+
+    const queryItem = `
+      INSERT INTO itens_pedido 
+      (pedido_id, produto_id, quantidade, preco_unitario) 
+      VALUES ($1, $2, $3, $4)
+    `;
+
+    for (let item of carrinho) {
+      const valItem = [idDoNovoPedido, item.id, item.quantidade, item.preco];
+      await client.query(queryItem, valItem);
     }
 
-    // AQUI VOLTAMOS PARA O NOME DA SUA COLUNA ORIGINAL: usuario_id
-    const query = 'SELECT * FROM produtos WHERE usuario_id = $1 ORDER BY nome ASC';
-    const valores = [tenantId];
+    await client.query('COMMIT');
 
-    const resultado = await pool.query(query, valores);
-
-    return res.json({
-      whatsapp: process.env.WHATSAPP_NUMBER,
-      produtos: resultado.rows
+    return res.status(201).json({
+      mensagem: "Pedido e Itens salvos com sucesso!",
+      id: idDoNovoPedido,
+      pedido: resultadoPedido.rows[0]
     });
 
   } catch (erro) {
-    console.error('Erro ao buscar itens:', erro);
-    return res.status(500).json({ erro: 'Falha no banco de dados' });
+    await client.query('ROLLBACK');
+    console.error("Erro na transação. Tudo desfeito:", erro);
+    return res.status(500).json({ erro: "Falha ao gravar pedido completo" });
+
+  } finally {
+    client.release();
   }
 });
 
@@ -130,6 +134,29 @@ app.post('/admin/login', async (req, res) => {
   }
 });
 
+// ==========================================
+// ROTA 3: RELATÓRIO DO GRÁFICO (TOP 7)
+// ==========================================
+app.get('/api/relatorios/top5/:tenantId', async (req, res) => {
+  const { tenantId } = req.params;
+  try {
+    const query = `
+      SELECT p.nome as nome, SUM(i.quantidade) as total_vendido
+      FROM itens_pedido i
+      JOIN produtos p ON i.produto_id = p.id
+      WHERE p.tenant_id = $1
+      GROUP BY p.nome
+      ORDER BY total_vendido DESC
+      LIMIT 7; -- AQUI ESTÁ A MUDANÇA (De 5 para 7)
+    `;
+    const { rows } = await pool.query(query, [tenantId]);
+    res.json(rows);
+  } catch (error) {
+    console.error("Erro ao gerar relatório:", error);
+    res.status(500).json({ error: 'Erro ao buscar dados do gráfico' });
+  }
+});
+
 // ROTA 2: Atualizar disponibilidade
 app.post('/admin/atualizar', async (req, res) => {
   const { usuario, senha, idProduto, disponivel } = req.body;
@@ -170,40 +197,35 @@ app.post('/admin/atualizar', async (req, res) => {
   }
 });
 
-// ROTA APRIMORADA: Salvar várias alterações de uma vez (incluindo Estoque e Alertas)
+// NOVA ROTA: Salvar várias alterações de uma vez
 app.post('/admin/atualizar-lote', async (req, res) => {
-  const { usuario, senha, produtos } = req.body;
+  // Agora recebemos a lista inteira do carrinho!
+  const { usuario, senha, listaProdutos } = req.body;
 
   const userCerto = process.env.ADMIN_USER;
   const hashCerto = process.env.ADMIN_PASS_HASH;
 
-  if (usuario !== userCerto) return res.status(401).json({ erro: 'Usuário incorreto!' });
+  if (usuario !== userCerto) {
+    return res.status(401).json({ erro: 'Usuário incorreto!' });
+  }
 
   try {
     const senhaValida = await bcrypt.compare(senha, hashCerto);
-    if (!senhaValida) return res.status(401).json({ erro: 'Senha incorreta!' });
-
-    for (let item of produtos) {
-      const query = `
-        UPDATE produtos 
-        SET 
-          disponivel = $1,
-          estoque = COALESCE($2, estoque) 
-        WHERE id = $3
-        RETURNING nome, estoque; 
-      `;
-      // O 'RETURNING' faz o banco devolver o nome e o estoque atualizado
-      const resultado = await pool.query(query, [item.disponivel, item.estoque, item.id]);
-
-      const produtoAtualizado = resultado.rows[0];
-
-      // REGRA DE NEGÓCIO: Se o gestor editou e ficou abaixo de 11, gera o alerta
-      if (produtoAtualizado && produtoAtualizado.estoque < 11) {
-        enviarAlertaWhatsApp(produtoAtualizado.nome, produtoAtualizado.estoque);
-      }
+    if (!senhaValida) {
+      return res.status(401).json({ erro: 'Senha incorreta!' });
     }
 
-    return res.json({ mensagem: 'Cardápio e Estoque salvos com sucesso!' });
+    // O Caixa do Supermercado: atualiza item por item no banco
+    for (let item of listaProdutos) {
+      const query = `
+        UPDATE produtos 
+        SET disponivel = $1 
+        WHERE id = $2
+      `;
+      await pool.query(query, [item.disponivel, item.id]);
+    }
+
+    return res.json({ mensagem: 'Cardápio salvo com sucesso!' });
 
   } catch (erro) {
     console.error('Erro ao salvar lote:', erro);
@@ -212,70 +234,69 @@ app.post('/admin/atualizar-lote', async (req, res) => {
 });
 
 // ==========================================
-// NOVAS ROTAS DE ESTOQUE E DEVOLUÇÃO
+// ROTA 2: SALVAR O PEDIDO (COM TRANSAÇÃO)
 // ==========================================
-
-// NOVA ROTA: Registrar venda, dar baixa e gerar alertas
-app.post('/api/registrar-venda', async (req, res) => {
-  const { itensCarrinho } = req.body;
-
-  if (!itensCarrinho || itensCarrinho.length === 0) {
-    return res.status(400).json({ erro: 'Carrinho vazio' });
-  }
+app.post('/api/pedidos', async (req, res) => {
+  const { tenantId, clienteNome, total, tipoEntrega, carrinho } = req.body;
+  const idDoNovoPedido = crypto.randomUUID();
+  const client = await pool.connect();
 
   try {
-    for (let item of itensCarrinho) {
-      const query = `
-        UPDATE produtos 
-        SET 
-          estoque = GREATEST(estoque - $1, 0),
-          disponivel = CASE WHEN (estoque - $1) <= 0 THEN false ELSE disponivel END
-        WHERE id = $2
-        RETURNING nome, estoque;
-      `;
-      const resultado = await pool.query(query, [item.quantidade, item.id]);
-      const produtoAtualizado = resultado.rows[0];
+    await client.query('BEGIN');
+    
+    // Ajustado para usuario_id para bater com o seu banco de dados
+    const queryPedido = `
+      INSERT INTO pedidos (id, usuario_id, cliente_nome, total, tipo_entrega) 
+      VALUES ($1, $2, $3, $4, $5) RETURNING *;
+    `;
+    const valPedido = [idDoNovoPedido, tenantId, clienteNome, total, tipoEntrega];
+    const resultadoPedido = await client.query(queryPedido, valPedido);
 
-      // Dispara o alerta se a venda derrubou o estoque para menos de 11
-      if (produtoAtualizado && produtoAtualizado.estoque < 11) {
-        enviarAlertaWhatsApp(produtoAtualizado.nome, produtoAtualizado.estoque);
-      }
+    const queryItem = `
+      INSERT INTO itens_pedido (pedido_id, produto_id, quantidade, preco_unitario) 
+      VALUES ($1, $2, $3, $4)
+    `;
+    for (let item of carrinho) {
+      const valItem = [idDoNovoPedido, item.id, item.quantidade, item.preco];
+      await client.query(queryItem, valItem);
     }
-    return res.json({ mensagem: 'Baixa no estoque realizada!' });
+
+    await client.query('COMMIT');
+    return res.status(201).json({
+      mensagem: "Pedido salvo com sucesso!",
+      id: idDoNovoPedido
+    });
   } catch (erro) {
-    console.error('Erro ao registrar venda:', erro);
-    return res.status(500).json({ erro: 'Erro ao dar baixa' });
+    await client.query('ROLLBACK');
+    console.error("Erro ao gravar pedido:", erro);
+    return res.status(500).json({ erro: "Falha ao gravar pedido" });
+  } finally {
+    client.release();
   }
 });
 
-// NOVA ROTA: Estornar (devolver) produto pelo painel Admin
-app.post('/admin/estornar', async (req, res) => {
-  const { usuario, senha, itensEstorno } = req.body;
-
-  const userCerto = process.env.ADMIN_USER;
-  const hashCerto = process.env.ADMIN_PASS_HASH;
-
-  if (usuario !== userCerto) return res.status(401).json({ erro: 'Usuário incorreto!' });
-
+// ==========================================
+// ROTA 3: RELATÓRIO DO GRÁFICO (TOP 7)
+// ==========================================
+app.get('/api/relatorios/top5/:tenantId', async (req, res) => {
+  const { tenantId } = req.params;
   try {
-    const senhaValida = await bcrypt.compare(senha, hashCerto);
-    if (!senhaValida) return res.status(401).json({ erro: 'Senha incorreta!' });
-
-    for (let item of itensEstorno) {
-      const query = `
-        UPDATE produtos 
-        SET estoque = estoque + $1, disponivel = true
-        WHERE id = $2
-      `;
-      await pool.query(query, [item.quantidade, item.id]);
-    }
-    return res.json({ mensagem: 'Estorno realizado!' });
-  } catch (erro) {
-    console.error('Erro ao estornar:', erro);
-    return res.status(500).json({ erro: 'Erro no estorno' });
+    const query = `
+      SELECT p.nome as nome, SUM(i.quantidade) as total_vendido
+      FROM itens_pedido i
+      JOIN produtos p ON i.produto_id = p.id
+      WHERE p.usuario_id = $1
+      GROUP BY p.nome
+      ORDER BY total_vendido DESC
+      LIMIT 7;
+    `;
+    const { rows } = await pool.query(query, [tenantId]);
+    res.json(rows);
+  } catch (error) {
+    console.error("Erro ao gerar relatório:", error);
+    res.status(500).json({ error: 'Erro ao buscar dados do gráfico' });
   }
 });
-
 
 
 // ==========================================
