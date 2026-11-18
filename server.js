@@ -305,3 +305,49 @@ const PORTA = process.env.PORT || 3000;
 app.listen(PORTA, () => {
   console.log(`✅ Servidor rodando lindamente na porta ${PORTA}`);
 });
+
+// ==========================================
+// ROTA 4: RELATÓRIO DE VENDAS DIÁRIAS
+// ==========================================
+app.get('/api/relatorios/vendas-diarias/:tenantId', async (req, res) => {
+  const { tenantId } = req.params;
+  try {
+    // ATENÇÃO: Verifique qual é o nome da coluna de data na sua tabela 'pedidos'. 
+    // Pode ser 'data_pedido', 'criado_em' ou 'created_at'. Altere abaixo se necessário.
+    const query = `
+      SELECT DATE(data_pedido) as data_venda, SUM(total) as total_arrecadado
+      FROM pedidos
+      WHERE tenant_id = $1
+      GROUP BY DATE(data_pedido)
+      ORDER BY data_venda DESC;
+    `;
+    const { rows } = await pool.query(query, [tenantId]);
+    res.json(rows);
+  } catch (error) {
+    console.error("Erro ao buscar vendas diárias:", error);
+    res.status(500).json({ error: 'Erro ao buscar vendas' });
+  }
+});
+
+// ==========================================
+// ROTA 5: ZERAR TODO O HISTÓRICO DE VENDAS
+// ==========================================
+app.delete('/api/relatorios/zerar/:tenantId', async (req, res) => {
+  const { tenantId } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Apaga primeiro os itens, depois os pedidos (usando tenant_id)
+    await client.query("DELETE FROM itens_pedido WHERE pedido_id IN (SELECT id FROM pedidos WHERE tenant_id = $1)", [tenantId]);
+    await client.query("DELETE FROM pedidos WHERE tenant_id = $1", [tenantId]);
+    
+    await client.query('COMMIT');
+    res.json({ mensagem: "Histórico zerado com sucesso!" });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error("Erro ao zerar vendas:", error);
+    res.status(500).json({ error: 'Erro ao zerar o histórico' });
+  } finally {
+    client.release();
+  }
+});
