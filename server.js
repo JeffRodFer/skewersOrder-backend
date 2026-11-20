@@ -61,12 +61,6 @@ app.post('/api/pedidos', async (req, res) => {
       VALUES ($1, $2, $3, $4)
     `;
 
-    const queryItem = `
-      INSERT INTO itens_pedido 
-      (pedido_id, produto_id, quantidade, preco_unitario) 
-      VALUES ($1, $2, $3, $4)
-    `;
-
     for (let item of carrinho) {
       const valItem = [idDoNovoPedido, item.id, item.quantidade, item.preco];
       await client.query(queryItem, valItem);
