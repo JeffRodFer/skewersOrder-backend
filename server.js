@@ -292,23 +292,41 @@ app.post('/admin/atualizar-lote', async (req, res) => {
   }
 });
 
-// ROTA: Estornar (Devolver unidade ao estoque)
+// ROTA: Estornar (Devolver unidades ao estoque)
 app.post('/admin/estornar', async (req, res) => {
-  const { id, produtoId, quantidade } = req.body;
-  const idFinal = id || produtoId;
-  const qtdFinal = Number(quantidade) || 1;
+  const { usuario, senha, itensEstorno } = req.body;
+
+  const userCerto = process.env.ADMIN_USER;
+  const hashCerto = process.env.ADMIN_PASS_HASH;
+
+  if (usuario !== userCerto) {
+    return res.status(401).json({ erro: 'Usuário incorreto!' });
+  }
+
+  if (!Array.isArray(itensEstorno)) {
+    return res.status(400).json({
+      erro: 'Nenhum item enviado para estorno.'
+    });
+  }
 
   try {
-    const query = `
-      UPDATE produtos
-      SET estoque = estoque + $1
-      WHERE id = $2
-      RETURNING *
-    `;
-    const result = await pool.query(query, [qtdFinal, idFinal]);
+    const senhaValida = await bcrypt.compare(senha, hashCerto);
+    if (!senhaValida) {
+      return res.status(401).json({ erro: 'Senha incorreta!' });
+    }
+
+    for (let item of itensEstorno) {
+      const qtd = Number(item.quantidade) || 0;
+      const query = `
+        UPDATE produtos
+        SET estoque = COALESCE(estoque, 0) + $1
+        WHERE id = $2
+      `;
+      await pool.query(query, [qtd, item.id]);
+    }
+
     return res.json({
-      mensagem: 'Estoque estornado!',
-      produto: result.rows[0]
+      mensagem: 'Estoque estornado com sucesso!'
     });
   } catch (erro) {
     console.error('Erro ao estornar:', erro);
