@@ -64,7 +64,7 @@ app.post('/api/pedidos', async (req, res) => {
     for (let item of carrinho) {
       const valItem = [idDoNovoPedido, item.id, item.quantidade, item.preco];
       await client.query(queryItem, valItem);
-      
+
       // === PASSO 3: BAIXA NO ESTOQUE ===
       // Usa o nome correto da coluna revelado no Neon: 'estoque'
       const queryBaixa = `UPDATE produtos SET estoque = estoque - $1 WHERE id = $2`;
@@ -236,68 +236,134 @@ app.post('/admin/atualizar-lote', async (req, res) => {
   }
 });
 
-// ==========================================
-// ROTA 2: SALVAR O PEDIDO (COM TRANSAÇÃO)
-// ==========================================
+// ROTA: Salvar alterações em lote (Status + Estoque)
+app.post('/admin/atualizar-lote', async (req, res) => {
+  const { usuario, senha, listaProdutos } = req.body;
+
+  const userCerto = process.env.ADMIN_USER;
+  const hashCerto = process.env.ADMIN_PASS_HASH;
+
+  if (usuario !== userCerto) {
+    return res.status(401).json({ erro: 'Usuário incorreto!' });
+  }
+
+  try {
+    const senhaValida = await bcrypt.compare(senha, hashCerto);
+    if (!senhaValida) {
+      return res.status(401).json({ erro: 'Senha incorreta!' });
+    }
+
+    for (let item of listaProdutos) {
+      const query = `
+        UPDATE produtos
+        SET disponivel = $1,
+            estoque = COALESCE($2, estoque)
+        WHERE id = $3
+      `;
+      await pool.query(query, [
+        item.disponivel,
+        item.estoque,
+        item.id
+      ]);
+    }
+
+    return res.json({ mensagem: 'Cardápio salvo com sucesso!' });
+
+  } catch (erro) {
+    console.error('Erro ao salvar lote:', erro);
+    return res.status(500).json({ erro: 'Erro ao salvar' });
+  }
+});
+
+// ROTA: Estornar (Devolver unidade ao estoque)
+app.post('/admin/estornar', async (req, res) => {
+  const { id, produtoId, quantidade } = req.body;
+  const idFinal = id || produtoId;
+  const qtdFinal = Number(quantidade) || 1;
+
+  try {
+    const query = `
+      UPDATE produtos
+      SET estoque = estoque + $1
+      WHERE id = $2
+      RETURNING *
+    `;
+    const result = await pool.query(query, [qtdFinal, idFinal]);
+    return res.json({
+      mensagem: 'Estoque estornado!',
+      produto: result.rows[0]
+    });
+  } catch (erro) {
+    console.error('Erro ao estornar:', erro);
+    return res.status(500).json({ erro: 'Erro ao estornar' });
+  }
+});
+
+// ROTA 2: Salvar pedido + Baixa automática de estoque
 app.post('/api/pedidos', async (req, res) => {
-  const { tenantId, clienteNome, total, tipoEntrega, carrinho } = req.body;
+  const {
+    tenantId,
+    clienteNome,
+    total,
+    tipoEntrega,
+    carrinho
+  } = req.body;
+
   const idDoNovoPedido = crypto.randomUUID();
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
-    
-    // Ajustado para usuario_id para bater com o seu banco de dados
+
     const queryPedido = `
-      INSERT INTO pedidos (id, usuario_id, cliente_nome, total, tipo_entrega) 
-      VALUES ($1, $2, $3, $4, $5) RETURNING *;
+      INSERT INTO pedidos
+      (id, usuario_id, cliente_nome, total, tipo_entrega)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *;
     `;
-    const valPedido = [idDoNovoPedido, tenantId, clienteNome, total, tipoEntrega];
-    const resultadoPedido = await client.query(queryPedido, valPedido);
+    const valPedido = [
+      idDoNovoPedido,
+      tenantId,
+      clienteNome,
+      total,
+      tipoEntrega
+    ];
+    await client.query(queryPedido, valPedido);
 
     const queryItem = `
-      INSERT INTO itens_pedido (pedido_id, produto_id, quantidade, preco_unitario) 
+      INSERT INTO itens_pedido
+      (pedido_id, produto_id, quantidade, preco_unitario)
       VALUES ($1, $2, $3, $4)
     `;
+
+    const queryBaixa = `
+      UPDATE produtos
+      SET estoque = GREATEST(estoque - $1, 0)
+      WHERE id = $2
+    `;
+
     for (let item of carrinho) {
-      const valItem = [idDoNovoPedido, item.id, item.quantidade, item.preco];
+      const valItem = [
+        idDoNovoPedido,
+        item.id,
+        item.quantidade,
+        item.preco
+      ];
       await client.query(queryItem, valItem);
+      await client.query(queryBaixa, [item.quantidade, item.id]);
     }
 
     await client.query('COMMIT');
     return res.status(201).json({
-      mensagem: "Pedido salvo com sucesso!",
+      mensagem: 'Pedido salvo com sucesso!',
       id: idDoNovoPedido
     });
   } catch (erro) {
     await client.query('ROLLBACK');
-    console.error("Erro ao gravar pedido:", erro);
-    return res.status(500).json({ erro: "Falha ao gravar pedido" });
+    console.error('Erro ao gravar pedido:', erro);
+    return res.status(500).json({ erro: 'Falha ao gravar' });
   } finally {
     client.release();
-  }
-});
-
-// ==========================================
-// ROTA 3: RELATÓRIO DO GRÁFICO (TOP 7)
-// ==========================================
-app.get('/api/relatorios/top5/:tenantId', async (req, res) => {
-  const { tenantId } = req.params;
-  try {
-    const query = `
-      SELECT p.nome as nome, SUM(i.quantidade) as total_vendido
-      FROM itens_pedido i
-      JOIN produtos p ON i.produto_id = p.id
-      WHERE p.usuario_id = $1
-      GROUP BY p.nome
-      ORDER BY total_vendido DESC
-      LIMIT 7;
-    `;
-    const { rows } = await pool.query(query, [tenantId]);
-    res.json(rows);
-  } catch (error) {
-    console.error("Erro ao gerar relatório:", error);
-    res.status(500).json({ error: 'Erro ao buscar dados do gráfico' });
   }
 });
 
@@ -345,7 +411,7 @@ app.delete('/api/relatorios/zerar/:tenantId', async (req, res) => {
     // Apaga primeiro os itens, depois os pedidos (usando tenant_id)
     await client.query("DELETE FROM itens_pedido WHERE pedido_id IN (SELECT id FROM pedidos WHERE tenant_id = $1)", [tenantId]);
     await client.query("DELETE FROM pedidos WHERE tenant_id = $1", [tenantId]);
-    
+
     await client.query('COMMIT');
     res.json({ mensagem: "Histórico zerado com sucesso!" });
   } catch (error) {
