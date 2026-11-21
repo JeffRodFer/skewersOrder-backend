@@ -200,10 +200,17 @@ app.post('/admin/atualizar', async (req, res) => {
   }
 });
 
-// NOVA ROTA: Salvar várias alterações de uma vez
+// ROTA: Salvar alterações em lote (Status + Estoque)
 app.post('/admin/atualizar-lote', async (req, res) => {
-  // Agora recebemos a lista inteira do carrinho!
-  const { usuario, senha, listaProdutos } = req.body;
+  const {
+    usuario,
+    senha,
+    produtos,
+    listaProdutos
+  } = req.body;
+
+  // Aceita tanto 'produtos' quanto 'listaProdutos'
+  const listaFinal = produtos || listaProdutos;
 
   const userCerto = process.env.ADMIN_USER;
   const hashCerto = process.env.ADMIN_PASS_HASH;
@@ -212,27 +219,37 @@ app.post('/admin/atualizar-lote', async (req, res) => {
     return res.status(401).json({ erro: 'Usuário incorreto!' });
   }
 
+  if (!Array.isArray(listaFinal)) {
+    return res.status(400).json({
+      erro: 'Lista de produtos não enviada.'
+    });
+  }
+
   try {
     const senhaValida = await bcrypt.compare(senha, hashCerto);
     if (!senhaValida) {
       return res.status(401).json({ erro: 'Senha incorreta!' });
     }
 
-    // O Caixa do Supermercado: atualiza item por item no banco
-    for (let item of listaProdutos) {
+    for (let item of listaFinal) {
       const query = `
-        UPDATE produtos 
-        SET disponivel = $1 
-        WHERE id = $2
+        UPDATE produtos
+        SET disponivel = $1,
+            estoque = COALESCE($2, estoque)
+        WHERE id = $3
       `;
-      await pool.query(query, [item.disponivel, item.id]);
+      await pool.query(query, [
+        item.disponivel,
+        item.estoque,
+        item.id
+      ]);
     }
 
     return res.json({ mensagem: 'Cardápio salvo com sucesso!' });
 
   } catch (erro) {
     console.error('Erro ao salvar lote:', erro);
-    return res.status(500).json({ erro: 'Erro ao salvar alterações' });
+    return res.status(500).json({ erro: 'Erro ao salvar' });
   }
 });
 
