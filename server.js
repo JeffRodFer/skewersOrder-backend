@@ -436,24 +436,36 @@ app.get('/api/relatorios/vendas-diarias/:tenantId', async (req, res) => {
 });
 
 // ==========================================
-// ROTA 5: ZERAR TODO O HISTÓRICO DE VENDAS
+// ROTA 5: RATEIO POR DATA (DIA OPERACIONAL)
 // ==========================================
-app.delete('/api/relatorios/zerar/:tenantId', async (req, res) => {
+app.get('/api/relatorios/dia/:tenantId', async (req, res) => {
   const { tenantId } = req.params;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    // Apaga primeiro os itens, depois os pedidos (usando tenant_id)
-    await client.query("DELETE FROM itens_pedido WHERE pedido_id IN (SELECT id FROM pedidos WHERE tenant_id = $1)", [tenantId]);
-    await client.query("DELETE FROM pedidos WHERE tenant_id = $1", [tenantId]);
+  const { data } = req.query;
 
-    await client.query('COMMIT');
-    res.json({ mensagem: "Histórico zerado com sucesso!" });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error("Erro ao zerar vendas:", error);
-    res.status(500).json({ error: 'Erro ao zerar o histórico' });
-  } finally {
-    client.release();
+  if (!data) {
+    return res.status(400).json({ erro: 'Informe a data' });
+  }
+
+  try {
+    const query = `
+      SELECT
+        COUNT(*) AS total_pedidos,
+        COALESCE(SUM(total), 0) AS faturamento,
+        tipo_entrega
+      FROM pedidos
+      WHERE tenant_id = $1
+        AND DATE(
+          (data_pedido AT TIME ZONE 'America/Recife')
+          - INTERVAL '3 hours'
+        ) = $2
+      GROUP BY tipo_entrega
+    `;
+    const { rows } = await pool.query(query, [tenantId, data]);
+    return res.json(rows);
+  } catch (erro) {
+    console.error('Erro ao buscar por data:', erro);
+    return res.status(500).json({ erro: 'Erro no banco' });
   }
 });
+
+
