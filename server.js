@@ -468,4 +468,38 @@ app.get('/api/relatorios/dia/:tenantId', async (req, res) => {
   }
 });
 
+// ==========================================
+// ROTA 6: RELATÓRIO POR PERÍODO (DE / ATÉ)
+// ==========================================
+app.get('/api/relatorios/periodo/:tenantId', async (req, res) => {
+  const { tenantId } = req.params;
+  const { inicio, fim } = req.query;
+
+  if (!inicio || !fim) {
+    return res.status(400).json({ erro: 'Informe as datas' });
+  }
+
+  try {
+    const query = `
+      SELECT
+        COUNT(*) AS total_pedidos,
+        COALESCE(SUM(total), 0) AS faturamento,
+        tipo_entrega
+      FROM pedidos
+      WHERE tenant_id = $1
+        AND DATE(
+          (data_pedido AT TIME ZONE 'America/Recife')
+          - INTERVAL '3 hours'
+        ) BETWEEN $2 AND $3
+      GROUP BY tipo_entrega
+    `;
+    const params = [tenantId, inicio, fim];
+    const { rows } = await pool.query(query, params);
+    return res.json(rows);
+  } catch (erro) {
+    console.error('Erro ao buscar período:', erro);
+    return res.status(500).json({ erro: 'Erro no banco' });
+  }
+});
+
 
