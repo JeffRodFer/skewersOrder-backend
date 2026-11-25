@@ -502,4 +502,46 @@ app.get('/api/relatorios/periodo/:tenantId', async (req, res) => {
   }
 });
 
+// ==========================================
+// ROTA 7: LISTA TODOS OS PEDIDOS DO PERÍODO
+// ==========================================
+app.get('/api/relatorios/pedidos/:tenantId', async (req, res) => {
+  const { tenantId } = req.params;
+  const { inicio, fim } = req.query;
+
+  if (!inicio || !fim) {
+    return res.status(400).json({ erro: 'Informe inicio e fim' });
+  }
+
+  try {
+    const sql = `
+      SELECT
+        cliente_nome,
+        total,
+        tipo_entrega,
+        farofa,
+        vinagrete,
+        observacoes,
+        data_pedido AT TIME ZONE 'America/Recife' AS hora_local
+      FROM pedidos
+      WHERE tenant_id = $1
+        AND DATE(
+          (data_pedido AT TIME ZONE 'America/Recife')
+          - INTERVAL '3 hours'
+        ) BETWEEN $2 AND $3
+      ORDER BY data_pedido DESC
+    `;
+
+    const { rows } = await pool.query(sql, [
+      tenantId,
+      inicio,
+      fim
+    ]);
+    return res.json(rows);
+  } catch (erro) {
+    console.error('Erro ao listar pedidos:', erro);
+    return res.status(500).json({ erro: 'Erro no banco' });
+  }
+});
+
 
