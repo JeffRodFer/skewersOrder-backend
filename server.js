@@ -435,6 +435,7 @@ app.get('/api/relatorios/vendas-diarias/:tenantId', async (req, res) => {
   }
 });
 
+
 // ==========================================
 // ROTA 5: RATEIO POR DATA (DIA OPERACIONAL)
 // ==========================================
@@ -544,4 +545,20 @@ app.get('/api/relatorios/pedidos/:tenantId', async (req, res) => {
   }
 });
 
+// Zerar histórico de vendas da loja
+app.delete('/api/relatorios/zerar/:tenantId', async (req, res) => {
+  const { tenantId } = req.params;
+
+  try {
+    await pool.query(
+      'DELETE FROM pedidos WHERE tenant_id = $1',
+      [tenantId]
+    );
+
+    return res.json({ mensagem: 'Histórico zerado com sucesso!' });
+  } catch (erro) {
+    console.error('Erro ao zerar histórico:', erro);
+    return res.status(500).json({ erro: 'Erro interno ao zerar vendas.' });
+  }
+});
 
